@@ -36,16 +36,16 @@
   canvas.width = canvas.height = SZ;
   const ctx = canvas.getContext('2d');
 
-  const N          = 150;
-  const MAX_SPEED  = 125;
-  const MIN_SPEED  = 36;
-  const MAX_FORCE  = 380;
+  const N         = 150;
+  const MAX_SPEED = 125;
+  const MIN_SPEED = 36;
+  const MAX_FORCE = 380;
   const SEP_R = 25, ALI_R = 52, COH_R = 52;
   const SEP_W = 2.1, ALI_W = 1.05, COH_W = 0.80;
   const AVOID_R = 82, AVOID_W = 4.8;
   const MARGIN  = 36;
-  const CONN_R  = 38;  // max dist for connection lines
-  const TRAIL   = 10;
+  const CONN_R  = 38;
+  const TRAIL   = 26;
 
   let mx = SZ/2, my = SZ/2, isInside = false;
   const waves = [];
@@ -70,7 +70,8 @@
       y:  SZ/2 + (Math.random()-0.5) * 80,
       vx: Math.cos(ang) * spd,
       vy: Math.sin(ang) * spd,
-      trail: [],
+      trail:      [],
+      alignScore: 0.5,
     });
   }
 
@@ -89,10 +90,9 @@
     const ey = (e.clientY - r.top)  * (SZ / r.height);
     boids.forEach(b => {
       const dx = b.x - ex, dy = b.y - ey;
-      const d = Math.sqrt(dx*dx + dy*dy) + 1;
-      const str = 10000 / (d * d);
-      b.vx += (dx/d) * str;
-      b.vy += (dy/d) * str;
+      const d  = Math.sqrt(dx*dx + dy*dy) + 1;
+      b.vx += (dx/d) * (10000 / (d*d));
+      b.vy += (dy/d) * (10000 / (d*d));
       [b.vx, b.vy] = clamp(b.vx, b.vy, MAX_SPEED * 3.5);
     });
     waves.push({ x: ex, y: ey, r: 0, born: 0 });
@@ -132,13 +132,28 @@
       });
 
       let fx = 0, fy = 0;
-      if (sn > 0) { const [sx, sy] = clamp(sfx, sfy, MAX_SPEED); fx += (sx - b.vx) * SEP_W; fy += (sy - b.vy) * SEP_W; }
-      if (an > 0) { const [ax, ay] = clamp(afx/an, afy/an, MAX_SPEED); fx += (ax - b.vx) * ALI_W; fy += (ay - b.vy) * ALI_W; }
-      if (cn > 0) { const [cx, cy] = clamp(cfx/cn - b.x, cfy/cn - b.y, MAX_SPEED); fx += cx * COH_W; fy += cy * COH_W; }
+      if (sn > 0) {
+        const [sx, sy] = clamp(sfx, sfy, MAX_SPEED);
+        fx += (sx - b.vx) * SEP_W; fy += (sy - b.vy) * SEP_W;
+      }
+      if (an > 0) {
+        const [ax, ay] = clamp(afx/an, afy/an, MAX_SPEED);
+        // Alignment score: how parallel is this boid to the group average?
+        const aspd = Math.sqrt(ax*ax + ay*ay);
+        const bspd = Math.sqrt(b.vx*b.vx + b.vy*b.vy);
+        if (aspd > 0 && bspd > 0) {
+          b.alignScore = ((ax/aspd)*(b.vx/bspd) + (ay/aspd)*(b.vy/bspd) + 1) / 2;
+        }
+        fx += (ax - b.vx) * ALI_W; fy += (ay - b.vy) * ALI_W;
+      }
+      if (cn > 0) {
+        const [cx, cy] = clamp(cfx/cn - b.x, cfy/cn - b.y, MAX_SPEED);
+        fx += cx * COH_W; fy += cy * COH_W;
+      }
 
       if (isInside) {
         const dx = b.x - mx, dy = b.y - my;
-        const d = Math.sqrt(dx*dx + dy*dy) + 0.1;
+        const d  = Math.sqrt(dx*dx + dy*dy) + 0.1;
         if (d < AVOID_R) {
           const str = (1 - d/AVOID_R) * AVOID_W;
           fx += (dx/d) * MAX_SPEED * str;
@@ -146,14 +161,13 @@
         }
       }
 
-      if (b.x < MARGIN)      fx += (MARGIN - b.x)        * 6;
-      if (b.x > SZ-MARGIN)   fx -= (b.x - (SZ-MARGIN))   * 6;
-      if (b.y < MARGIN)      fy += (MARGIN - b.y)        * 6;
-      if (b.y > SZ-MARGIN)   fy -= (b.y - (SZ-MARGIN))   * 6;
+      if (b.x < MARGIN)    fx += (MARGIN - b.x)      * 6;
+      if (b.x > SZ-MARGIN) fx -= (b.x - (SZ-MARGIN)) * 6;
+      if (b.y < MARGIN)    fy += (MARGIN - b.y)      * 6;
+      if (b.y > SZ-MARGIN) fy -= (b.y - (SZ-MARGIN)) * 6;
 
       [fx, fy] = clamp(fx, fy, MAX_FORCE);
-      b.vx += fx * dt;
-      b.vy += fy * dt;
+      b.vx += fx * dt; b.vy += fy * dt;
       [b.vx, b.vy] = clamp(b.vx, b.vy, MAX_SPEED);
       [b.vx, b.vy] = ensureMin(b.vx, b.vy, MIN_SPEED);
 
@@ -173,6 +187,7 @@
   }
 
   function draw() {
+    ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, SZ, SZ);
 
@@ -181,7 +196,21 @@
       ctx.fillRect(0, 0, SZ, SZ);
     }
 
-    // Connection lines between close boids
+    ctx.globalCompositeOperation = 'screen';
+
+    // Cursor threat aura
+    if (isInside) {
+      const grd = ctx.createRadialGradient(mx, my, 0, mx, my, AVOID_R);
+      grd.addColorStop(0,   'rgba(255,80,20,0.10)');
+      grd.addColorStop(0.5, 'rgba(255,50,10,0.03)');
+      grd.addColorStop(1,   'rgba(0,0,0,0)');
+      ctx.beginPath();
+      ctx.arc(mx, my, AVOID_R, 0, Math.PI*2);
+      ctx.fillStyle = grd;
+      ctx.fill();
+    }
+
+    // Connection lines
     ctx.beginPath();
     for (let i = 0; i < boids.length; i++) {
       const a = boids[i];
@@ -194,7 +223,7 @@
         }
       }
     }
-    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
     ctx.lineWidth = 0.5;
     ctx.stroke();
 
@@ -208,26 +237,31 @@
       ctx.stroke();
     });
 
-    // Boids
+    // Boids + trails
     boids.forEach(b => {
-      const spd   = Math.sqrt(b.vx*b.vx + b.vy*b.vy);
-      const t     = spd / MAX_SPEED;
-      const alpha = 0.38 + t * 0.52;
-      const ang   = Math.atan2(b.vy, b.vx);
-      const sz    = 4.2 + t * 2.0;
+      const spd = Math.sqrt(b.vx*b.vx + b.vy*b.vy);
+      const t   = spd / MAX_SPEED;
+      const ang = Math.atan2(b.vy, b.vx);
+      const sz  = 4.0 + t * 2.0;
 
-      // Trail line
-      if (b.trail.length > 1) {
+      // Color: teal when aligned, orange when scattered
+      const hue = 28 + b.alignScore * 150;  // 28=orange → 178=teal
+      const sat = 82;
+      const lit = 38 + t * 44;  // brighter when faster
+
+      // Dot trail
+      const tlen = b.trail.length;
+      for (let k = 0; k < tlen; k++) {
+        const frac = (k + 1) / tlen;
+        const a    = frac * frac * 0.50;
+        const l    = 12 + frac * (lit - 12);
         ctx.beginPath();
-        ctx.moveTo(b.trail[0].x, b.trail[0].y);
-        for (let k = 1; k < b.trail.length; k++) ctx.lineTo(b.trail[k].x, b.trail[k].y);
-        ctx.strokeStyle = `rgba(255,255,255,${(alpha * 0.22).toFixed(3)})`;
-        ctx.lineWidth = 0.65;
-        ctx.lineCap = 'round';
-        ctx.stroke();
+        ctx.arc(b.trail[k].x, b.trail[k].y, 0.7 + frac * 1.1, 0, Math.PI*2);
+        ctx.fillStyle = `hsla(${hue.toFixed(0)},${sat}%,${l.toFixed(0)}%,${a.toFixed(3)})`;
+        ctx.fill();
       }
 
-      // Chevron
+      // Chevron head
       ctx.save();
       ctx.translate(b.x, b.y);
       ctx.rotate(ang);
@@ -237,7 +271,7 @@
       ctx.lineTo(-sz * 0.38, 0);
       ctx.lineTo(-sz * 0.62,  sz * 0.36);
       ctx.closePath();
-      ctx.fillStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
+      ctx.fillStyle = `hsl(${hue.toFixed(0)},${sat}%,${lit.toFixed(0)}%)`;
       ctx.fill();
       ctx.restore();
     });
