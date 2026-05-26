@@ -14,7 +14,7 @@
       display: flex; align-items: center; justify-content: center;
       overflow: hidden; font-family: system-ui, sans-serif; cursor: none;
     }
-    #wrap { display: flex; flex-direction: column; align-items: center; gap: 20px; }
+    #wrap { display: flex; flex-direction: column; align-items: center; gap: 16px; }
     canvas {
       width: var(--sz); height: var(--sz);
       border-radius: 10px; border: 1px solid rgba(255,255,255,0.06); display: block;
@@ -25,6 +25,12 @@
       color: rgba(255,255,255,0.2);
     }
     #scoreVal, #flockVal { color: rgba(255,255,255,0.55); }
+    #lastVisit {
+      font-size: 10px; letter-spacing: 0.06em;
+      color: rgba(255,255,255,0.14);
+      text-align: center;
+      min-height: 14px;
+    }
   </style>
 </head>
 <body>
@@ -35,8 +41,62 @@
       <span class="stat">flock <span id="flockVal">150</span></span>
       <span class="stat" id="hintLabel">herd into the ring</span>
     </div>
+    <div id="lastVisit"></div>
   </div>
 <script>
+  // ── Supabase ───────────────────────────────────────────────────────────────
+  const SB_URL = 'https://rpgjmulbfjoennhwftla.supabase.co';
+  const SB_KEY = 'sb_publishable_Po1mlOdTqsOHCzZZbiKlcA_cEozhwLR';
+
+  const lastVisitEl = document.getElementById('lastVisit');
+
+  async function fetchGeo() {
+    try {
+      const r = await fetch('https://ipapi.co/json/');
+      if (!r.ok) return {};
+      const d = await r.json();
+      return { city: d.city || null, region: d.region || null };
+    } catch { return {}; }
+  }
+
+  async function sbInsert(score, city, region) {
+    try {
+      await fetch(`${SB_URL}/rest/v1/scores`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SB_KEY,
+          'Authorization': `Bearer ${SB_KEY}`,
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify({ score, city: city || null, region: region || null })
+      });
+    } catch {}
+  }
+
+  async function sbLastScore() {
+    try {
+      const r = await fetch(
+        `${SB_URL}/rest/v1/scores?select=score,city,region&order=created_at.desc&limit=1`,
+        { headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` } }
+      );
+      const d = await r.json();
+      return Array.isArray(d) && d.length ? d[0] : null;
+    } catch { return null; }
+  }
+
+  function formatLastVisit(row) {
+    if (!row) return '';
+    const loc = [row.city, row.region].filter(Boolean).join(', ') || 'somewhere';
+    return `last played by a visitor from ${loc} — ${row.score} pt${row.score !== 1 ? 's' : ''}`;
+  }
+
+  // Show previous visitor on load
+  sbLastScore().then(row => {
+    if (row) lastVisitEl.textContent = formatLastVisit(row);
+  });
+
+  // ── Canvas setup ───────────────────────────────────────────────────────────
   const SZ = 422;
   const canvas = document.getElementById('c');
   canvas.width = canvas.height = SZ;
@@ -57,34 +117,23 @@
   const CONN_R  = 38;
   const TRAIL   = 26;
 
-  const ZONE_R       = 65;      // target zone radius
-  const FILL_THRESH  = 0.60;    // 60% of active flock inside
-  const HOLD_TIME    = 1.5;     // seconds to hold fill
-  const GAMEOVER_MIN = 40;      // boids below this → game over
-  const EDGE_MARGIN  = 30;      // zone centre must be this far from edges
+  const ZONE_R       = 65;
+  const FILL_THRESH  = 0.60;
+  const HOLD_TIME    = 1.5;
+  const GAMEOVER_MIN = 40;
+  const EDGE_MARGIN  = 30;
 
   // ── State ──────────────────────────────────────────────────────────────────
   let mx = SZ/2, my = SZ/2, isInside = false;
   const waves = [];
   let flashAlpha = 0;
-
-  // Edge-escape flashes: { x, y, alpha }
   const edgeFlashes = [];
-
-  // Zone
-  let zone = { x: 0, y: 0 };
-  let zoneBreath   = 0;   // time accumulator for breathing
-  let zoneHoldT    = 0;   // how long 60% threshold has been met
-  let zoneFlash    = 0;   // completion flash alpha
-  let zonePulseR   = 0;   // outward ring radius on completion
-  let zonePulseA   = 0;   // outward ring alpha
-
-  // Score / game
-  let score       = 0;
-  let gameOver    = false;
-  let insideCount = 0;    // updated each frame
-
-  // Boids
+  let zone       = { x: 0, y: 0 };
+  let zoneBreath = 0, zoneHoldT = 0, zoneFlash = 0, zonePulseR = 0, zonePulseA = 0;
+  let score      = 0;
+  let gameOver   = false;
+  let gameOverHandled = false;
+  let insideCount = 0;
   let boids = [];
 
   function spawnBoids() {
@@ -97,37 +146,27 @@
         y:  SZ/2 + (Math.random()-0.5) * 80,
         vx: Math.cos(ang) * spd,
         vy: Math.sin(ang) * spd,
-        trail:      [],
-        alignScore: 0.5,
+        trail: [], alignScore: 0.5,
       });
     }
   }
 
   function spawnZone() {
-    zone.x = EDGE_MARGIN + ZONE_R + Math.random() * (SZ - 2 * (EDGE_MARGIN + ZONE_R));
-    zone.y = EDGE_MARGIN + ZONE_R + Math.random() * (SZ - 2 * (EDGE_MARGIN + ZONE_R));
-    zoneHoldT  = 0;
-    zoneFlash  = 0;
-    zonePulseR = 0;
-    zonePulseA = 0;
+    zone.x = EDGE_MARGIN + ZONE_R + Math.random() * (SZ - 2*(EDGE_MARGIN + ZONE_R));
+    zone.y = EDGE_MARGIN + ZONE_R + Math.random() * (SZ - 2*(EDGE_MARGIN + ZONE_R));
+    zoneHoldT = 0; zoneFlash = 0; zonePulseR = 0; zonePulseA = 0;
   }
 
   function restart() {
-    score     = 0;
-    gameOver  = false;
-    waves.length = 0;
-    edgeFlashes.length = 0;
-    flashAlpha = 0;
-    spawnBoids();
-    spawnZone();
+    score = 0; gameOver = false; gameOverHandled = false;
+    waves.length = 0; edgeFlashes.length = 0; flashAlpha = 0;
+    spawnBoids(); spawnZone();
     scoreEl.textContent = '0';
     flockEl.textContent = String(N);
     hintLabel.textContent = 'herd into the ring';
   }
 
-  // ── Init ───────────────────────────────────────────────────────────────────
-  spawnBoids();
-  spawnZone();
+  spawnBoids(); spawnZone();
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function clamp(vx, vy, max) {
@@ -152,7 +191,6 @@
 
   canvas.addEventListener('pointerdown', e => {
     if (gameOver) { restart(); return; }
-
     const r  = canvas.getBoundingClientRect();
     const ex = (e.clientX - r.left) * (SZ / r.width);
     const ey = (e.clientY - r.top)  * (SZ / r.height);
@@ -165,6 +203,7 @@
     });
     waves.push({ x: ex, y: ey, r: 0, born: 0 });
     flashAlpha = 0.14;
+    playClick();
   });
 
   canvas.addEventListener('touchstart', e => {
@@ -183,11 +222,20 @@
   }, { passive: false });
   canvas.addEventListener('touchend', () => isInside = false);
 
+  // ── Game over handler ──────────────────────────────────────────────────────
+  async function handleGameOver() {
+    gameOverHandled = true;
+    if (score === 0) return;
+    const { city, region } = await fetchGeo();
+    await sbInsert(score, city, region);
+    // Update the "last visit" line with this session's result
+    lastVisitEl.textContent = formatLastVisit({ score, city, region });
+  }
+
   // ── Update ─────────────────────────────────────────────────────────────────
   function update(dt) {
     if (gameOver) return;
 
-    // Boid physics
     const toRemove = [];
     boids.forEach(b => {
       let sfx=0, sfy=0, sn=0;
@@ -213,9 +261,8 @@
         const [ax, ay] = clamp(afx/an, afy/an, MAX_SPEED);
         const aspd = Math.sqrt(ax*ax + ay*ay);
         const bspd = Math.sqrt(b.vx*b.vx + b.vy*b.vy);
-        if (aspd > 0 && bspd > 0) {
+        if (aspd > 0 && bspd > 0)
           b.alignScore = ((ax/aspd)*(b.vx/bspd) + (ay/aspd)*(b.vy/bspd) + 1) / 2;
-        }
         fx += (ax - b.vx) * ALI_W; fy += (ay - b.vy) * ALI_W;
       }
       if (cn > 0) {
@@ -233,52 +280,37 @@
         }
       }
 
-      // NO margin wall forces — boids can escape
-
       [fx, fy] = clamp(fx, fy, MAX_FORCE);
       b.vx += fx * dt; b.vy += fy * dt;
       [b.vx, b.vy] = clamp(b.vx, b.vy, MAX_SPEED);
       [b.vx, b.vy] = ensureMin(b.vx, b.vy, MIN_SPEED);
-
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
-
+      b.x += b.vx * dt; b.y += b.vy * dt;
       b.trail.push({ x: b.x, y: b.y });
       if (b.trail.length > TRAIL) b.trail.shift();
 
-      // Check if escaped canvas
       if (b.x < 0 || b.x > SZ || b.y < 0 || b.y > SZ) {
         toRemove.push(b);
-        // Edge flash position: clamp to border
-        const ex = Math.max(0, Math.min(SZ, b.x));
-        const ey = Math.max(0, Math.min(SZ, b.y));
-        edgeFlashes.push({ x: ex, y: ey, alpha: 0.7 });
+        edgeFlashes.push({ x: Math.max(0, Math.min(SZ, b.x)), y: Math.max(0, Math.min(SZ, b.y)), alpha: 0.7 });
       }
     });
 
-    // Remove escaped boids
     if (toRemove.length > 0) {
-      toRemove.forEach(b => {
-        const idx = boids.indexOf(b);
-        if (idx !== -1) boids.splice(idx, 1);
-      });
+      toRemove.forEach(b => { const i = boids.indexOf(b); if (i !== -1) boids.splice(i, 1); });
       flockEl.textContent = String(boids.length);
     }
 
-    // Fade edge flashes
     for (let i = edgeFlashes.length - 1; i >= 0; i--) {
       edgeFlashes[i].alpha -= dt * 2.5;
       if (edgeFlashes[i].alpha <= 0) edgeFlashes.splice(i, 1);
     }
 
-    // Game over check
     if (boids.length < GAMEOVER_MIN) {
       gameOver = true;
-      hintLabel.textContent = 'game over';
+      hintLabel.textContent = 'game over · click to restart';
+      if (!gameOverHandled) handleGameOver();
       return;
     }
 
-    // Zone logic: count inside
     insideCount = 0;
     boids.forEach(b => {
       const dx = b.x - zone.x, dy = b.y - zone.y;
@@ -286,48 +318,38 @@
     });
 
     const fillFrac = insideCount / boids.length;
-
     if (fillFrac >= FILL_THRESH) {
       zoneHoldT += dt;
       if (zoneHoldT >= HOLD_TIME) {
-        // Round complete!
         score++;
         scoreEl.textContent = String(score);
-        flashAlpha = 0.45;
-        zoneFlash  = 0.9;
-        zonePulseR = ZONE_R;
-        zonePulseA = 0.85;
-        playClick();
-        spawnZone();
+        flashAlpha = 0.45; zoneFlash = 0.9;
+        zonePulseR = ZONE_R; zonePulseA = 0.85;
+        playClick(); spawnZone();
       }
     } else {
-      zoneHoldT = Math.max(0, zoneHoldT - dt * 0.5); // decay hold timer if threshold drops
+      zoneHoldT = Math.max(0, zoneHoldT - dt * 0.5);
     }
 
-    // Zone visuals
-    zoneBreath   += dt;
-    zoneFlash    *= 0.88;
-    zonePulseR   += 180 * dt;
-    zonePulseA   *= 0.82;
+    zoneBreath += dt;
+    zoneFlash  *= 0.88;
+    zonePulseR += 180 * dt;
+    zonePulseA *= 0.82;
 
-    // Shockwaves
     for (let i = waves.length - 1; i >= 0; i--) {
       waves[i].born += dt;
       waves[i].r    += 275 * dt;
       if (waves[i].r > SZ * 1.5) waves.splice(i, 1);
     }
-
     flashAlpha *= 0.84;
   }
 
   // ── Draw ───────────────────────────────────────────────────────────────────
   function draw() {
-    // Background
     ctx.globalCompositeOperation = 'source-over';
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, SZ, SZ);
 
-    // Canvas flash
     if (flashAlpha > 0.004) {
       ctx.fillStyle = `rgba(255,255,255,${flashAlpha.toFixed(3)})`;
       ctx.fillRect(0, 0, SZ, SZ);
@@ -335,176 +357,124 @@
 
     ctx.globalCompositeOperation = 'screen';
 
-    // ── Target zone ──────────────────────────────────────────────────────────
     if (!gameOver) {
-      const fillFrac  = boids.length > 0 ? insideCount / boids.length : 0;
-      const holdFrac  = Math.min(1, zoneHoldT / HOLD_TIME);
+      const fillFrac    = boids.length > 0 ? insideCount / boids.length : 0;
+      const holdFrac    = Math.min(1, zoneHoldT / HOLD_TIME);
       const breathScale = 1 + 0.025 * Math.sin(zoneBreath * 1.6);
-      const zr = ZONE_R * breathScale;
+      const zr          = ZONE_R * breathScale;
 
-      // Fill — brightens with occupancy
-      const baseFill  = 0.12 + fillFrac * 0.28;
-      const fillAlpha = baseFill + zoneFlash * 0.4;
-      ctx.beginPath();
-      ctx.arc(zone.x, zone.y, zr, 0, Math.PI*2);
-      ctx.fillStyle = `rgba(255,255,255,${fillAlpha.toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(zone.x, zone.y, zr, 0, Math.PI*2);
+      ctx.fillStyle = `rgba(255,255,255,${(0.12 + fillFrac * 0.28 + zoneFlash * 0.4).toFixed(3)})`;
       ctx.fill();
 
-      // Hold progress ring underneath stroke
       if (holdFrac > 0.02) {
         ctx.beginPath();
         ctx.arc(zone.x, zone.y, zr, -Math.PI/2, -Math.PI/2 + holdFrac * Math.PI*2);
         ctx.strokeStyle = `rgba(255,255,255,${(0.55 * holdFrac).toFixed(3)})`;
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
+        ctx.lineWidth = 2.5; ctx.stroke();
       }
 
-      // Main ring stroke
-      const strokeAlpha = 0.30 + fillFrac * 0.20 + zoneFlash * 0.35;
-      ctx.beginPath();
-      ctx.arc(zone.x, zone.y, zr, 0, Math.PI*2);
-      ctx.strokeStyle = `rgba(255,255,255,${strokeAlpha.toFixed(3)})`;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+      ctx.beginPath(); ctx.arc(zone.x, zone.y, zr, 0, Math.PI*2);
+      ctx.strokeStyle = `rgba(255,255,255,${(0.30 + fillFrac * 0.20 + zoneFlash * 0.35).toFixed(3)})`;
+      ctx.lineWidth = 1.5; ctx.stroke();
 
-      // Completion pulse ring
       if (zonePulseA > 0.01) {
-        ctx.beginPath();
-        ctx.arc(zone.x, zone.y, zonePulseR, 0, Math.PI*2);
+        ctx.beginPath(); ctx.arc(zone.x, zone.y, zonePulseR, 0, Math.PI*2);
         ctx.strokeStyle = `rgba(255,255,255,${zonePulseA.toFixed(3)})`;
-        ctx.lineWidth = 2;
-        ctx.stroke();
+        ctx.lineWidth = 2; ctx.stroke();
       }
 
-      // Count label inside zone
       ctx.globalCompositeOperation = 'source-over';
-      const countAlpha = 0.25 + fillFrac * 0.50;
-      ctx.fillStyle = `rgba(255,255,255,${countAlpha.toFixed(2)})`;
-      ctx.font = '10px system-ui';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+      ctx.fillStyle = `rgba(255,255,255,${(0.25 + fillFrac * 0.50).toFixed(2)})`;
+      ctx.font = '10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.letterSpacing = '0.08em';
       ctx.fillText(String(insideCount), zone.x, zone.y);
       ctx.letterSpacing = '0';
       ctx.globalCompositeOperation = 'screen';
     }
 
-    // ── Edge escape flashes ───────────────────────────────────────────────────
     edgeFlashes.forEach(ef => {
       const grd = ctx.createRadialGradient(ef.x, ef.y, 0, ef.x, ef.y, 18);
-      grd.addColorStop(0,   `rgba(255,160,80,${ef.alpha.toFixed(3)})`);
-      grd.addColorStop(1,   'rgba(0,0,0,0)');
-      ctx.beginPath();
-      ctx.arc(ef.x, ef.y, 18, 0, Math.PI*2);
-      ctx.fillStyle = grd;
-      ctx.fill();
+      grd.addColorStop(0, `rgba(255,160,80,${ef.alpha.toFixed(3)})`);
+      grd.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.beginPath(); ctx.arc(ef.x, ef.y, 18, 0, Math.PI*2);
+      ctx.fillStyle = grd; ctx.fill();
     });
 
-    // ── Cursor threat aura ────────────────────────────────────────────────────
     if (isInside) {
       const grd = ctx.createRadialGradient(mx, my, 0, mx, my, AVOID_R);
       grd.addColorStop(0,   'rgba(255,80,20,0.10)');
       grd.addColorStop(0.5, 'rgba(255,50,10,0.03)');
       grd.addColorStop(1,   'rgba(0,0,0,0)');
-      ctx.beginPath();
-      ctx.arc(mx, my, AVOID_R, 0, Math.PI*2);
-      ctx.fillStyle = grd;
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(mx, my, AVOID_R, 0, Math.PI*2);
+      ctx.fillStyle = grd; ctx.fill();
     }
 
-    // ── Connection lines ──────────────────────────────────────────────────────
     ctx.beginPath();
     for (let i = 0; i < boids.length; i++) {
       const a = boids[i];
       for (let j = i+1; j < boids.length; j++) {
         const b = boids[j];
         const dx = b.x - a.x, dy = b.y - a.y;
-        if (dx*dx + dy*dy < CONN_R*CONN_R) {
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-        }
+        if (dx*dx + dy*dy < CONN_R*CONN_R) { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
       }
     }
-    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
-    ctx.lineWidth = 0.5;
-    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 0.5; ctx.stroke();
 
-    // ── Shockwave rings ───────────────────────────────────────────────────────
     waves.forEach(w => {
       const a = Math.max(0, 0.42 * (1 - w.born * 1.5));
-      ctx.beginPath();
-      ctx.arc(w.x, w.y, w.r, 0, Math.PI*2);
-      ctx.strokeStyle = `rgba(255,255,255,${a.toFixed(3)})`;
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
+      ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, Math.PI*2);
+      ctx.strokeStyle = `rgba(255,255,255,${a.toFixed(3)})`; ctx.lineWidth = 1.2; ctx.stroke();
     });
 
-    // ── Boids + trails ────────────────────────────────────────────────────────
     boids.forEach(b => {
       const spd = Math.sqrt(b.vx*b.vx + b.vy*b.vy);
       const t   = spd / MAX_SPEED;
       const ang = Math.atan2(b.vy, b.vx);
       const sz  = 4.0 + t * 2.0;
-
       const hue = 28 + b.alignScore * 150;
-      const sat = 82;
       const lit = 38 + t * 44;
 
-      // Dot trail
       const tlen = b.trail.length;
       for (let k = 0; k < tlen; k++) {
         const frac = (k + 1) / tlen;
-        const a    = frac * frac * 0.50;
-        const l    = 12 + frac * (lit - 12);
         ctx.beginPath();
         ctx.arc(b.trail[k].x, b.trail[k].y, 0.7 + frac * 1.1, 0, Math.PI*2);
-        ctx.fillStyle = `hsla(${hue.toFixed(0)},${sat}%,${l.toFixed(0)}%,${a.toFixed(3)})`;
+        ctx.fillStyle = `hsla(${hue.toFixed(0)},82%,${(12 + frac * (lit - 12)).toFixed(0)}%,${(frac * frac * 0.50).toFixed(3)})`;
         ctx.fill();
       }
 
-      // Chevron head
-      ctx.save();
-      ctx.translate(b.x, b.y);
-      ctx.rotate(ang);
+      ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(ang);
       ctx.beginPath();
       ctx.moveTo(sz, 0);
       ctx.lineTo(-sz * 0.62, -sz * 0.36);
       ctx.lineTo(-sz * 0.38, 0);
       ctx.lineTo(-sz * 0.62,  sz * 0.36);
       ctx.closePath();
-      ctx.fillStyle = `hsl(${hue.toFixed(0)},${sat}%,${lit.toFixed(0)}%)`;
-      ctx.fill();
-      ctx.restore();
+      ctx.fillStyle = `hsl(${hue.toFixed(0)},82%,${lit.toFixed(0)}%)`;
+      ctx.fill(); ctx.restore();
     });
 
-    // ── Cursor dot ────────────────────────────────────────────────────────────
     if (isInside) {
-      ctx.beginPath();
-      ctx.arc(mx, my, 2, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(mx, my, 2, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fill();
     }
 
-    // ── Game over overlay ─────────────────────────────────────────────────────
     if (gameOver) {
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = 'rgba(0,0,0,0.62)';
       ctx.fillRect(0, 0, SZ, SZ);
-
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
 
       ctx.fillStyle = 'rgba(255,255,255,0.75)';
-      ctx.font = '11px system-ui';
-      ctx.letterSpacing = '0.18em';
-      ctx.fillText('GAME OVER', SZ/2, SZ/2 - 22);
+      ctx.font = '11px system-ui'; ctx.letterSpacing = '0.18em';
+      ctx.fillText('GAME OVER', SZ/2, SZ/2 - 20);
 
       ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.font = '10px system-ui';
-      ctx.letterSpacing = '0.14em';
-      ctx.fillText(`SCORE  ${score}`, SZ/2, SZ/2 + 4);
+      ctx.font = '10px system-ui'; ctx.letterSpacing = '0.14em';
+      ctx.fillText(`SCORE  ${score}`, SZ/2, SZ/2 + 6);
 
-      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      ctx.fillStyle = 'rgba(255,255,255,0.20)';
       ctx.letterSpacing = '0.12em';
       ctx.fillText('CLICK TO RESTART', SZ/2, SZ/2 + 28);
 
