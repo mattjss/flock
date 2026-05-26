@@ -1,8 +1,8 @@
-# Flock
+# Shepherd
 
-150 boids each independently apply separation, alignment, and cohesion rules to their local neighbors — producing a self-organizing murmuration with no central control. Color maps flock state: warm orange when agents are scattered and chaotic, cool teal when moving in tight alignment. Move your cursor near the flock to scatter it; click to explode the entire formation outward.
+150 boids run Reynolds flocking rules and flee your cursor like a sheepdog. A glowing target ring appears on the field — chase the flock into it to score. Boids that escape the canvas are gone permanently; lose too many and it's game over. Color maps flock state: warm orange when scattered, cool teal when aligned.
 
-**Interaction:** Move cursor to scatter the flock · Click to explode the formation  
+**Interaction:** Move cursor to herd boids · Click to scatter · Fill the ring to score  
 **Tech:** Canvas 2D, Reynolds boids, alignment-based HSL color, screen compositing
 
 [Live →](https://mattjss.github.io/flock/)
