@@ -79,7 +79,6 @@
     mx = (e.clientX - r.left) * (SZ / r.width);
     my = (e.clientY - r.top)  * (SZ / r.height);
     isInside = true;
-    maybeTick(e.clientX, e.clientY);
   });
   canvas.addEventListener('mouseenter', () => isInside = true);
   canvas.addEventListener('mouseleave', () => isInside = false);
@@ -251,26 +250,13 @@
     }
   }
 
-  let hoverAudio = null, clickAudio = null;
+  let clickAudio = null;
   function initAudio() {
-    if (hoverAudio) return;
-    hoverAudio = new Audio('./sounds/selection.mp3');
-    hoverAudio.volume = 0.06;
+    if (clickAudio) return;
     clickAudio = new Audio('./sounds/selection.mp3');
     clickAudio.volume = 0.42;
   }
-  function playHover() { initAudio(); hoverAudio.currentTime = 0; hoverAudio.play().catch(()=>{}); }
   function playClick() { initAudio(); clickAudio.currentTime = 0; clickAudio.play().catch(()=>{}); }
-
-  let lastTick = {x:0,y:0}, lastTickMs = 0;
-  function maybeTick(x, y) {
-    const dx = x - lastTick.x, dy = y - lastTick.y;
-    if (dx*dx + dy*dy < 48*48) return;
-    const now = performance.now();
-    if (now - lastTickMs < 220) return;
-    lastTick = {x, y}; lastTickMs = now;
-    playHover();
-  }
 
   let lastT = performance.now();
   function loop(now) {
