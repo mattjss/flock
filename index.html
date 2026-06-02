@@ -126,6 +126,15 @@
   const GAMEOVER_MIN = 40;
   const EDGE_MARGIN  = 30;
 
+  const PRED_SPEED   = 88;
+  const PRED_HUNT_R  = 200;
+  const PRED_KILL_R  = 17;
+  const PRED_FLEE_R  = 112;
+  const PRED_KILL_CD = 1.5;
+
+  const WIND_STR     = 20;
+  const WIND_CYCLE   = 11;
+
   // ── State ──────────────────────────────────────────────────────────────────
   let mx = SZ/2, my = SZ/2, isInside = false;
   const waves = [];
@@ -138,6 +147,12 @@
   let gameOverHandled = false;
   let insideCount = 0;
   let boids = [];
+
+  let pred = { x: SZ*0.15, y: SZ*0.15, vx: PRED_SPEED*0.6, vy: PRED_SPEED*0.6, killTimer: 0 };
+
+  let windAngle       = Math.random() * Math.PI * 2;
+  let windTargetAngle = windAngle;
+  let windTimer       = 0;
 
   function spawnBoids() {
     boids = [];
@@ -164,9 +179,63 @@
     score = 0; gameOver = false; gameOverHandled = false;
     waves.length = 0; edgeFlashes.length = 0; flashAlpha = 0;
     spawnBoids(); spawnZone();
+    pred.x = SZ * 0.15; pred.y = SZ * 0.15;
+    pred.vx = PRED_SPEED * 0.6; pred.vy = PRED_SPEED * 0.6;
+    pred.killTimer = 0;
+    windAngle = Math.random() * Math.PI * 2;
+    windTargetAngle = windAngle; windTimer = 0;
     scoreEl.textContent = '0';
     flockEl.textContent = String(N);
     hintLabel.textContent = 'herd into the ring';
+  }
+
+  function updatePredator(dt) {
+    pred.killTimer = Math.max(0, pred.killTimer - dt);
+
+    // Find nearest boid
+    let nearest = null, nearestD2 = Infinity;
+    for (let i = 0; i < boids.length; i++) {
+      const dx = boids[i].x - pred.x, dy = boids[i].y - pred.y;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < nearestD2) { nearestD2 = d2; nearest = boids[i]; }
+    }
+    const nearestD = Math.sqrt(nearestD2);
+
+    // Steering: hunt nearest boid within range, otherwise wander
+    let pfx = 0, pfy = 0;
+    if (nearest && nearestD < PRED_HUNT_R) {
+      const dx = nearest.x - pred.x, dy = nearest.y - pred.y;
+      pfx = (dx / nearestD) * PRED_SPEED * 3;
+      pfy = (dy / nearestD) * PRED_SPEED * 3;
+    } else {
+      pfx = pred.vx * 0.4;
+      pfy = pred.vy * 0.4;
+    }
+
+    // Edge avoidance
+    const EM = 38;
+    if (pred.x < EM)        pfx += (EM - pred.x) * 4;
+    if (pred.x > SZ - EM)   pfx -= (pred.x - (SZ - EM)) * 4;
+    if (pred.y < EM)        pfy += (EM - pred.y) * 4;
+    if (pred.y > SZ - EM)   pfy -= (pred.y - (SZ - EM)) * 4;
+
+    pred.vx += pfx * dt * 5;
+    pred.vy += pfy * dt * 5;
+    [pred.vx, pred.vy] = clamp(pred.vx, pred.vy, PRED_SPEED);
+    [pred.vx, pred.vy] = ensureMin(pred.vx, pred.vy, PRED_SPEED * 0.45);
+    pred.x += pred.vx * dt;
+    pred.y += pred.vy * dt;
+
+    // Eat nearest boid if close enough
+    if (nearest && nearestD < PRED_KILL_R && pred.killTimer <= 0) {
+      const idx = boids.indexOf(nearest);
+      if (idx !== -1) {
+        edgeFlashes.push({ x: nearest.x, y: nearest.y, alpha: 1.0, red: true });
+        boids.splice(idx, 1);
+        flockEl.textContent = String(boids.length);
+        pred.killTimer = PRED_KILL_CD;
+      }
+    }
   }
 
   spawnBoids(); spawnZone();
@@ -239,6 +308,21 @@
   function update(dt) {
     if (gameOver) return;
 
+    // Wind
+    windTimer += dt;
+    if (windTimer > WIND_CYCLE) {
+      windTimer = 0;
+      windTargetAngle = Math.random() * Math.PI * 2;
+    }
+    let diff = windTargetAngle - windAngle;
+    while (diff >  Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    windAngle += diff * dt * 0.25;
+    const windX = Math.cos(windAngle) * WIND_STR;
+    const windY = Math.sin(windAngle) * WIND_STR;
+
+    updatePredator(dt);
+
     const toRemove = [];
     boids.forEach(b => {
       let sfx=0, sfy=0, sn=0;
@@ -282,6 +366,19 @@
           fy += (dy/d) * MAX_SPEED * str;
         }
       }
+
+      // Predator flee
+      const pdx = b.x - pred.x, pdy = b.y - pred.y;
+      const pd  = Math.sqrt(pdx*pdx + pdy*pdy) + 0.1;
+      if (pd < PRED_FLEE_R) {
+        const str = (1 - pd / PRED_FLEE_R) * 7.5;
+        fx += (pdx/pd) * MAX_SPEED * str;
+        fy += (pdy/pd) * MAX_SPEED * str;
+      }
+
+      // Wind
+      fx += windX * 0.45;
+      fy += windY * 0.45;
 
       [fx, fy] = clamp(fx, fy, MAX_FORCE);
       b.vx += fx * dt; b.vy += fy * dt;
@@ -397,10 +494,12 @@
     }
 
     edgeFlashes.forEach(ef => {
-      const grd = ctx.createRadialGradient(ef.x, ef.y, 0, ef.x, ef.y, 18);
-      grd.addColorStop(0, `rgba(255,160,80,${ef.alpha.toFixed(3)})`);
+      const r = ef.red ? 22 : 18;
+      const c0 = ef.red ? `rgba(255,40,10,${ef.alpha.toFixed(3)})` : `rgba(255,160,80,${ef.alpha.toFixed(3)})`;
+      const grd = ctx.createRadialGradient(ef.x, ef.y, 0, ef.x, ef.y, r);
+      grd.addColorStop(0, c0);
       grd.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.beginPath(); ctx.arc(ef.x, ef.y, 18, 0, Math.PI*2);
+      ctx.beginPath(); ctx.arc(ef.x, ef.y, r, 0, Math.PI*2);
       ctx.fillStyle = grd; ctx.fill();
     });
 
@@ -458,10 +557,48 @@
       ctx.fill(); ctx.restore();
     });
 
+    // Predator glow
+    const pgrd = ctx.createRadialGradient(pred.x, pred.y, 0, pred.x, pred.y, 32);
+    pgrd.addColorStop(0, 'rgba(255,40,8,0.22)');
+    pgrd.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.beginPath(); ctx.arc(pred.x, pred.y, 32, 0, Math.PI*2);
+    ctx.fillStyle = pgrd; ctx.fill();
+
+    // Predator body
+    const pang = Math.atan2(pred.vy, pred.vx);
+    const psz  = 6.5;
+    ctx.save(); ctx.translate(pred.x, pred.y); ctx.rotate(pang);
+    ctx.beginPath();
+    ctx.moveTo(psz, 0);
+    ctx.lineTo(-psz * 0.62, -psz * 0.38);
+    ctx.lineTo(-psz * 0.36, 0);
+    ctx.lineTo(-psz * 0.62,  psz * 0.38);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,55,15,0.92)';
+    ctx.fill(); ctx.restore();
+
     if (isInside) {
       ctx.beginPath(); ctx.arc(mx, my, 2, 0, Math.PI*2);
       ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fill();
     }
+
+    // Wind indicator — tiny arrow bottom-left corner
+    ctx.globalCompositeOperation = 'source-over';
+    const wx = Math.cos(windAngle) * 13, wy = Math.sin(windAngle) * 13;
+    const ox = 20, oy = SZ - 20;
+    const wa = Math.atan2(wy, wx);
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox + wx, oy + wy); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(ox + wx, oy + wy);
+    ctx.lineTo(ox + wx - Math.cos(wa - 0.45) * 5, oy + wy - Math.sin(wa - 0.45) * 5);
+    ctx.moveTo(ox + wx, oy + wy);
+    ctx.lineTo(ox + wx - Math.cos(wa + 0.45) * 5, oy + wy - Math.sin(wa + 0.45) * 5);
+    ctx.stroke();
+    ctx.restore();
+    ctx.globalCompositeOperation = 'screen';
 
     if (gameOver) {
       ctx.globalCompositeOperation = 'source-over';
