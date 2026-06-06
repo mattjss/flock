@@ -28,12 +28,6 @@
       color: rgba(255,255,255,0.2);
     }
     #scoreVal, #flockVal { font-weight: 400; color: rgba(255,255,255,0.55); }
-    #lastVisit {
-      font-size: 10px; font-weight: 300; line-height: 20px; letter-spacing: 0.04em;
-      color: rgba(255,255,255,0.14);
-      text-align: center;
-      min-height: 20px;
-    }
   </style>
 </head>
 <body>
@@ -44,14 +38,13 @@
       <span class="stat">flock <span id="flockVal">150</span></span>
       <span class="stat" id="hintLabel">herd into the ring</span>
     </div>
-    <div id="lastVisit"></div>
   </div>
 <script>
   // ── Supabase ───────────────────────────────────────────────────────────────
   const SB_URL = 'https://rpgjmulbfjoennhwftla.supabase.co';
   const SB_KEY = 'sb_publishable_Po1mlOdTqsOHCzZZbiKlcA_cEozhwLR';
 
-  const lastVisitEl = document.getElementById('lastVisit');
+  let lastVisitText = '';
 
   async function fetchGeo() {
     try {
@@ -94,9 +87,9 @@
     return `last played by a visitor from ${loc} — ${row.score} pt${row.score !== 1 ? 's' : ''}`;
   }
 
-  // Show previous visitor on load
+  // Load previous visitor score for end screen
   sbLastScore().then(row => {
-    if (row) lastVisitEl.textContent = formatLastVisit(row);
+    if (row) lastVisitText = formatLastVisit(row);
   });
 
   // ── Canvas setup ───────────────────────────────────────────────────────────
@@ -300,8 +293,7 @@
     if (score === 0) return;
     const { city, region } = await fetchGeo();
     await sbInsert(score, city, region);
-    // Update the "last visit" line with this session's result
-    lastVisitEl.textContent = formatLastVisit({ score, city, region });
+    lastVisitText = formatLastVisit({ score, city, region });
   }
 
   // ── Update ─────────────────────────────────────────────────────────────────
@@ -406,7 +398,7 @@
 
     if (boids.length < GAMEOVER_MIN) {
       gameOver = true;
-      hintLabel.textContent = 'game over · click to restart';
+      hintLabel.textContent = '';
       if (!gameOverHandled) handleGameOver();
       return;
     }
@@ -606,17 +598,23 @@
       ctx.fillRect(0, 0, SZ, SZ);
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
 
+      const hasVisit = lastVisitText.length > 0;
+      const blockH   = hasVisit ? 56 : 30;
+      const topY     = SZ/2 - blockH/2;
+
       ctx.fillStyle = 'rgba(255,255,255,0.75)';
       ctx.font = '11px system-ui'; ctx.letterSpacing = '0.18em';
-      ctx.fillText('GAME OVER', SZ/2, SZ/2 - 20);
+      ctx.fillText('GAME OVER', SZ/2, topY);
 
       ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.font = '10px system-ui'; ctx.letterSpacing = '0.14em';
-      ctx.fillText(`SCORE  ${score}`, SZ/2, SZ/2 + 6);
+      ctx.font = '10px system-ui'; ctx.letterSpacing = '0.12em';
+      ctx.fillText(`score  ${score}  ·  flock  ${boids.length}`, SZ/2, topY + 26);
 
-      ctx.fillStyle = 'rgba(255,255,255,0.20)';
-      ctx.letterSpacing = '0.12em';
-      ctx.fillText('CLICK TO RESTART', SZ/2, SZ/2 + 28);
+      if (hasVisit) {
+        ctx.fillStyle = 'rgba(255,255,255,0.18)';
+        ctx.letterSpacing = '0.06em';
+        ctx.fillText(lastVisitText, SZ/2, topY + 52);
+      }
 
       ctx.letterSpacing = '0';
       ctx.globalCompositeOperation = 'screen';
